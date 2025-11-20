@@ -3,3 +3,7 @@ We are making a project which gives the proffesinal summary of students who are 
 g.co/g1referral/XYQ8TRYG
 
 https://gemini.google.com/share/fe0ed91d1bd4
+
+
+AIzaSyAFyGM6ltHYozvlDM8QOOOSpwcU5mhZARc
+
