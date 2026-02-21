@@ -1,0 +1,17 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@media print {
+  form, .bg-black, button {
+    display: none !important;
+  }
+  .bg-gray-950 {
+    background-color: white !important;
+    color: black !important;
+  }
+  .bg-gray-900 {
+    background-color: transparent !important;
+    border: 1px solid #ddd;
+  }
+}
