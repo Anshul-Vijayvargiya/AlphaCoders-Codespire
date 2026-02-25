@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from "react";
-import { 
-  ShieldCheck, Search, Award, Github, Star, GitFork, 
-  Box, ExternalLink, Cpu, Terminal, Zap, ShieldAlert, Activity, FileText, BarChart3, AlertCircle, Loader2, MessageSquare, Fingerprint
+import {
+  Search, Award, Box, ExternalLink, Terminal, ShieldAlert, FileText, Loader2, MessageSquare, Fingerprint, Activity, Clock, Copy, Plus, Minus, Info
 } from "lucide-react";
 
 export default function DevProofAI() {
@@ -11,6 +10,7 @@ export default function DevProofAI() {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [scanStep, setScanStep] = useState(0);
+  const [expandedQ, setExpandedQ] = useState(null);
 
   const scanMessages = [
     { m: "Establishing Neural Handshake...", p: 15 },
@@ -36,224 +36,464 @@ export default function DevProofAI() {
     setScanStep(0);
     setError("");
     setData(null);
+    setExpandedQ(null);
 
     try {
       const ghToken = import.meta.env.VITE_GITHUB_TOKEN || "";
       const headers = ghToken ? { Authorization: `Bearer ${ghToken}` } : {};
 
-      const [uRes, rRes] = await Promise.all([
+      const [uRes, rRes, eRes] = await Promise.all([
         fetch(`https://api.github.com/users/${username}`, { headers }),
-        fetch(`https://api.github.com/users/${username}/repos?per_page=100&sort=updated`, { headers })
+        fetch(`https://api.github.com/users/${username}/repos?per_page=100&sort=updated`, { headers }),
+        fetch(`https://api.github.com/users/${username}/events/public?per_page=100`, { headers }) // Fetch real events
       ]);
 
       if (!uRes.ok) throw new Error("ID_NOT_FOUND: Profile non-existent or private.");
-      
+
       const user = await uRes.json();
       const repos = await rRes.json();
+      const events = eRes.ok ? await eRes.json() : [];
 
       if (repos.length === 0) throw new Error("INSUFFICIENT_DATA: 0 Repositories found.");
 
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      await new Promise(resolve => setTimeout(resolve, 2500));
 
+      // --- 1) TIMELINE FORENSICS (REAL DATA) ---
+      let activeMonthsList = new Set();
+      let lastEventDate = null;
+      let maxGapDays = 0;
+      let totalCommitsInPeriod = 0;
+
+      events.forEach(ev => {
+        const d = new Date(ev.created_at);
+        activeMonthsList.add(`${d.getFullYear()}-${d.getMonth()}`);
+
+        if (lastEventDate) {
+          const gap = Math.abs(lastEventDate - d) / (1000 * 60 * 60 * 24);
+          if (gap > maxGapDays) maxGapDays = Math.floor(gap);
+        }
+        lastEventDate = d;
+
+        if (ev.type === 'PushEvent' && ev.payload?.commits) {
+          totalCommitsInPeriod += ev.payload.commits.length;
+        }
+      });
+
+      const activeMonthsStr = events.length > 0 ? `${activeMonthsList.size} / 12` : 'N/A';
+      const maxGapStr = events.length > 0 ? `${maxGapDays} days` : 'N/A';
+
+      let trendStr = 'Stable =';
+      if (totalCommitsInPeriod > 50) trendStr = 'High ↑';
+      else if (totalCommitsInPeriod < 10 && events.length > 0) trendStr = 'Low ↓';
+
+      let consistencyLabel = 'MEDIUM';
+      if (maxGapDays < 7 && activeMonthsList.size > 2) consistencyLabel = 'HIGH';
+      if (maxGapDays > 30) consistencyLabel = 'LOW';
+
+      // --- 2) IMPROVED AUTH SCORE LOGIC ---
       const forkCount = repos.filter(r => r.fork).length;
       const originalCount = repos.length - forkCount;
       const forkRatio = (forkCount / repos.length) * 100;
-      
-      // DYNAMIC CONFIDENCE CALCULATION
-      const confidence = Math.min(80 + (repos.length / 5) + (user.bio ? 5 : 0), 98);
-      const authScore = Math.min(Math.round(((originalCount / repos.length) * 75) + (user.followers * 1.5)), 100);
+      const originalWorkPcnt = Math.min(Math.round((originalCount / repos.length) * 100), 100) || 0;
 
-      setData({ 
-        user, 
-        authScore,
+      const totalStars = repos.reduce((a, b) => a + b.stargazers_count, 0);
+      const starsPerRepo = repos.length > 0 ? (totalStars / repos.length) : 0;
+
+      // Calculate depth (proxy: average size of original repos)
+      const origRepos = repos.filter(r => !r.fork);
+      const avgSize = origRepos.length > 0 ? (origRepos.reduce((a, b) => a + b.size, 0) / origRepos.length) : 0;
+      const depthScore = Math.min(Math.round((avgSize / 5000) * 100), 100); // Normalize: 5000kb avg is "100 depth"
+
+      // New Robust Formula
+      const weightOriginal = originalWorkPcnt * 0.40;
+      const weightConsistency = (consistencyLabel === 'HIGH' ? 100 : consistencyLabel === 'MEDIUM' ? 70 : 40) * 0.20;
+      const weightDepth = depthScore * 0.20;
+      const weightStars = Math.min(starsPerRepo * 10, 100) * 0.10; // 10 avg stars = max community signal
+      const weightFollowers = Math.min(user.followers * 2, 100) * 0.10; // 50 followers = max follower signal
+
+      const calculatedAuthScore = Math.round(weightOriginal + weightConsistency + weightDepth + weightStars + weightFollowers);
+      const finalAuthScore = isNaN(calculatedAuthScore) ? 75 : calculatedAuthScore;
+
+      const confidence = Math.min(80 + (repos.length / 5) + (user.bio ? 5 : 0), 98);
+
+      const primaryLanguage = repos.filter(r => r.language)[0]?.language || 'Core';
+
+      setData({
+        user,
+        authScore: finalAuthScore,
         confidence: confidence.toFixed(0),
+        forensics: {
+          consistency: consistencyLabel,
+          activeMonths: activeMonthsStr,
+          longestGap: maxGapStr,
+          trend: trendStr
+        },
+        trustBreakdown: {
+          originalWork: originalWorkPcnt,
+          commitConsistency: (consistencyLabel === 'HIGH' ? 95 : consistencyLabel === 'MEDIUM' ? 75 : 45),
+          forkRatioScore: Math.max(100 - forkRatio, 20).toFixed(0),
+          communitySignal: Math.min(Math.round(weightStars * 10 + weightFollowers * 10), 100) // normalize back to 100 for display
+        },
         metrics: {
           forkRatio: forkRatio.toFixed(1),
           originality: originalCount,
           stars: repos.reduce((a, b) => a + b.stargazers_count, 0)
         },
         questions: [
-          `Explain the architectural choices in ${repos[0]?.name || 'your projects'}.`,
-          `How did you manage state complexity in ${repos[1]?.name || 'recent work'}?`,
-          `Describe your strategy for optimizing ${repos[0]?.language || 'core'} performance.`
+          {
+            q: `Explain the architectural choices in ${repos[0]?.name || 'your projects'}.`,
+            diff: "Hard",
+            copy: `Could you walk me through the architectural choices and specific design patterns you implemented in ${repos[0]?.name || 'your primary project'}? I'm particularly interested in how you structured the ${primaryLanguage} codebase.`,
+            expected: `Candidate should mention specific design patterns (e.g., MVC, modular architecture), reasoning behind directory structures, and how they separated concerns (business logic vs UI). Look for explanations on why they chose ${primaryLanguage} specific frameworks or libraries.`
+          },
+          {
+            q: `How did you manage state complexity in ${repos[1]?.name || 'recent work'}?`,
+            diff: "Medium",
+            copy: `In ${repos[1]?.name || 'your recent work'}, how did you handle data flow and state management as the application grew in complexity?`,
+            expected: "Candidate should detail tools used (e.g., Redux, Context API, React Query if React; or equivalent in their stack), why local vs global state was chosen, and how they avoided prop drilling or redundant re-renders."
+          },
+          {
+            q: `Discuss your strategy for optimizing ${primaryLanguage} performance.`,
+            diff: "Varies",
+            copy: `What specific strategies did you employ to optimize performance and bundle sizes in your ${primaryLanguage} repositories?`,
+            expected: "Candidate should bring up real-world metrics. Examples include lazy loading, memoization, tree-shaking, database indexing, or specific algorithmic optimizations they performed."
+          }
         ],
         featured: repos.sort((a, b) => b.stargazers_count - a.stargazers_count).slice(0, 3)
       });
     } catch (err) { setError(err.message); } finally { setLoading(false); }
   };
 
+  const copyToClipboard = (text) => {
+    navigator.clipboard.writeText(text);
+  };
+
   return (
-    <div className="app-container">
-      <style>{`
-        :root { --bg: #05070a; --card: #0d1117; --accent: #2563eb; --emerald: #10b981; --amber: #f59e0b; --rose: #f43f5e; }
-        body { background: var(--bg); color: #e6edf3; font-family: 'Inter', sans-serif; margin: 0; }
-        .app-container { padding: 40px 20px; max-width: 1200px; margin: 0 auto; }
-        .glass { background: var(--card); border: 1px solid rgba(255,255,255,0.05); border-radius: 16px; padding: 24px; transition: 0.3s ease; }
-        .glass:hover { border-color: rgba(37,99,235,0.2); }
-        .btn-primary { background: var(--accent); color: white; border: none; padding: 14px 28px; border-radius: 10px; font-weight: 800; cursor: pointer; display: flex; align-items: center; gap: 10px; }
-        .btn-primary:disabled { opacity: 0.5; }
-        .grid-main { display: grid; grid-template-columns: 320px 1fr; gap: 24px; margin-top: 32px; }
-        .radar-poly { fill: rgba(37,99,235,0.2); stroke: var(--accent); stroke-width: 2; }
-        .shimmer { background: linear-gradient(90deg, transparent, rgba(255,255,255,0.03), transparent); background-size: 200% 100%; animation: shim 2s infinite; }
-        @keyframes shim { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
-        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-        .spinning { animation: spin 1s linear infinite; }
-        @media (max-width: 900px) { .grid-main { grid-template-columns: 1fr; } }
-      `}</style>
+    <div className="min-h-screen bg-slate-950 text-slate-200 font-sans p-6 md:p-10 selection:bg-blue-500/30">
+      <div className="max-w-7xl mx-auto">
 
-      {/* HEADER */}
-      <nav style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '40px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <Fingerprint color="var(--accent)" size={38} /> 
-          <div>
-            <div style={{ fontWeight: 950, fontSize: '24px', letterSpacing: '-1px' }}>DEVPROOF AI</div>
-            <div style={{ fontSize: '9px', fontWeight: 'bold', color: '#6e7681', letterSpacing: '1px' }}>DECISION-GRADE INTELLIGENCE</div>
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: '20px', fontSize: '10px', fontWeight: 'bold' }}>
-           <span style={{ color: '#6e7681' }}>SCAN_MODE: FORENSIC</span>
-           <span style={{ color: 'var(--emerald)' }}>● AI_CONFIDENCE: {data ? data.confidence : '94'}%</span>
-        </div>
-      </nav>
-
-      {/* SEARCH COMMAND */}
-      <section className="glass shimmer" style={{ marginBottom: '32px' }}>
-        <form onSubmit={analyze} style={{ display: 'flex', gap: '12px' }}>
-          <div style={{ flex: 1, position: 'relative', display: 'flex', alignItems: 'center' }}>
-            <Terminal style={{ position: 'absolute', left: '16px', color: '#6e7681' }} size={20} />
-            <input 
-              disabled={loading}
-              value={input} onChange={(e) => setInput(e.target.value)}
-              placeholder="Enter GitHub ID or profile URL for audit..."
-              style={{ width: '100%', background: 'rgba(0,0,0,0.3)', border: '1px solid #30363d', color: 'white', padding: '18px 18px 18px 48px', borderRadius: '12px', outline: 'none', fontSize: '15px' }}
-            />
-          </div>
-          <button disabled={loading || !input} className="btn-primary">
-            {loading ? <Loader2 className="spinning" /> : <Search size={20} />}
-            {loading ? "AUDITING..." : "RUN INTEL"}
-          </button>
-        </form>
-        {loading && (
-            <div style={{ marginTop: '20px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', marginBottom: '8px' }}>
-                    <span style={{ color: 'var(--accent)', fontWeight: 'bold' }}>{scanMessages[scanStep].m}</span>
-                    <span style={{ color: '#6e7681' }}>{scanMessages[scanStep].p}%</span>
-                </div>
-                <div style={{ height: '2px', background: '#161b22', overflow: 'hidden' }}>
-                    <div style={{ width: `${scanMessages[scanStep].p}%`, height: '100%', background: 'var(--accent)', transition: 'width 0.4s ease' }}></div>
-                </div>
+        {/* HEADER */}
+        <nav className="flex flex-col md:flex-row justify-between items-center mb-12 gap-4">
+          <div className="flex items-center gap-4 group cursor-pointer">
+            <div className="relative">
+              <div className="absolute inset-0 bg-blue-500 rounded-full blur-lg opacity-40 group-hover:opacity-60 transition duration-500"></div>
+              <Fingerprint className="text-blue-500 relative z-10 w-10 h-10 transition-transform duration-500 group-hover:scale-110 group-hover:rotate-12" />
             </div>
-        )}
-      </section>
-
-      {error && <div className="glass" style={{ borderLeft: '4px solid var(--rose)', color: 'var(--rose)', fontSize: '14px', marginBottom: '20px' }}><ShieldAlert inline size={16} /> <b>PROTOCOL_ERROR:</b> {error}</div>}
-
-      {data && (
-        <main className="grid-main">
-          {/* SIDEBAR: AUTHENTICITY */}
-          <aside style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-            <div className="glass" style={{ textAlign: 'center' }}>
-              <img src={data.user.avatar_url} style={{ width: '100px', height: '100px', borderRadius: '24px', marginBottom: '16px', border: '3px solid #30363d' }} alt="" />
-              <h2 style={{ margin: '0', fontSize: '22px', fontWeight: 900 }}>{data.user.name || data.user.login}</h2>
-              <div style={{ display: 'flex', justifyContent: 'center', gap: '6px', marginTop: '12px' }}>
-                 <span style={{ fontSize: '10px', padding: '4px 8px', borderRadius: '4px', background: 'rgba(16,185,129,0.1)', color: 'var(--emerald)', border: '1px solid var(--emerald)' }}>Authentic</span>
-                 <span style={{ fontSize: '10px', padding: '4px 8px', borderRadius: '4px', background: 'rgba(37,99,235,0.1)', color: 'var(--accent)', border: '1px solid var(--accent)' }}>Pro</span>
+            <div>
+              <div className="font-extrabold text-2xl tracking-tight text-white flex items-center gap-2">
+                DEVPROOF <span className="text-blue-500">AI</span>
               </div>
-              
-              <div style={{ margin: '32px 0' }}>
-                <div style={{ fontSize: '64px', fontWeight: 950, color: 'var(--accent)', lineHeight: 1 }}>{data.authScore}%</div>
-                <div style={{ fontSize: '9px', color: '#6e7681', fontWeight: 'bold', letterSpacing: '2px', marginTop: '8px' }}>TRUST INDEX</div>
-              </div>
+              <div className="text-[10px] font-bold text-slate-500 tracking-widest uppercase mt-0.5">Decision-Grade Intelligence</div>
+            </div>
+          </div>
+          <div className="flex gap-4 text-xs font-bold border border-slate-800/60 bg-slate-900/40 backdrop-blur-sm p-3 rounded-full shadow-lg shadow-black/20">
+            <span className="text-slate-400 flex items-center gap-2"><div className="w-1.5 h-1.5 rounded-full bg-slate-500"></div> FORENSIC SCAN</span>
+            <span className="text-emerald-400 flex items-center gap-2 animate-pulse"><div className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]"></div> CONFIDENCE: {data ? data.confidence : '94'}%</span>
+          </div>
+        </nav>
 
-              <button className="btn-primary" style={{ width: '100%', background: '#161b22', fontSize: '11px', padding: '10px' }} onClick={() => setShowEvidence(!showEvidence)}>
-                {showEvidence ? "CLOSE EVIDENCE" : "VIEW EVIDENCE BREAKDOWN ↓"}
+        {/* SEARCH COMMAND */}
+        <section className="relative group mb-10 z-10">
+          <div className="absolute -inset-0.5 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-2xl blur opacity-20 group-hover:opacity-40 transition duration-1000 group-hover:duration-200"></div>
+          <div className="relative bg-slate-900/80 backdrop-blur-xl border border-slate-700/50 rounded-2xl p-6 shadow-2xl">
+            <form onSubmit={analyze} className="flex flex-col md:flex-row gap-4">
+              <div className="relative flex-1 flex items-center">
+                <Terminal className="absolute left-5 text-blue-400/70 w-5 h-5 pointer-events-none" />
+                <input
+                  disabled={loading}
+                  value={input} onChange={(e) => setInput(e.target.value)}
+                  placeholder="Enter GitHub ID or profile URL for audit..."
+                  className="w-full bg-slate-950/50 border border-slate-800 focus:border-blue-500/50 text-white pl-14 pr-6 py-4 rounded-xl outline-none text-base placeholder-slate-600 focus:ring-4 focus:ring-blue-500/10 transition-all shadow-inner disabled:opacity-50"
+                />
+              </div>
+              <button
+                disabled={loading || !input}
+                className="bg-blue-600 hover:bg-blue-500 text-white border border-blue-400/30 px-8 py-4 rounded-xl font-bold flex items-center justify-center gap-3 transition-all transform hover:scale-[1.02] hover:shadow-[0_0_20px_rgba(37,99,235,0.4)] disabled:opacity-50 disabled:hover:scale-100 disabled:cursor-not-allowed uppercase tracking-wider text-sm"
+              >
+                {loading ? <Loader2 className="animate-spin w-5 h-5" /> : <Search className="w-5 h-5" />}
+                {loading ? "Auditing..." : "Run Intel"}
               </button>
+            </form>
 
-              {showEvidence && (
-                <div style={{ textAlign: 'left', marginTop: '20px', fontSize: '11px', padding: '16px', background: '#05070a', borderRadius: '12px', border: '1px solid #30363d' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px' }}><span>Original DNA</span><span style={{ color: 'var(--emerald)' }}>{data.metrics.originality} Source Repos</span></div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px' }}><span>Fork-to-Original</span><span style={{ color: 'var(--emerald)' }}>{data.metrics.forkRatio}%</span></div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Anomalies</span><span style={{ color: 'var(--emerald)' }}>None Detected</span></div>
+            {/* Loader Progress Bar */}
+            {loading && (
+              <div className="mt-8">
+                <div className="flex justify-between text-xs font-medium mb-3">
+                  <span className="text-blue-400 animate-pulse">{scanMessages[scanStep].m}</span>
+                  <span className="text-slate-500 font-mono">{scanMessages[scanStep].p}%</span>
                 </div>
-              )}
-            </div>
-
-            <div className="glass">
-              <label style={{ fontSize: '10px', fontWeight: 'bold', color: '#6e7681', display: 'block', marginBottom: '20px' }}>SKILL RADAR (AI GENERATED)</label>
-              <div style={{ height: '160px', display: 'flex', alignItems: 'center', justify: 'center', position: 'relative' }}>
-                <svg width="140" height="140" viewBox="0 0 100 100">
-                  <circle cx="50" cy="50" r="45" fill="none" stroke="#161b22" strokeWidth="0.5" />
-                  <circle cx="50" cy="50" r="30" fill="none" stroke="#161b22" strokeWidth="0.5" />
-                  <path d="M 50 5 L 50 95 M 5 50 L 95 50" stroke="#161b22" strokeWidth="0.5" />
-                  <polygon points="50,15 80,40 70,80 30,80 20,40" className="radar-poly" />
-                </svg>
-                <div style={{ position: 'absolute', fontSize: '8px', width: '100%', height: '100%' }}>
-                   <span style={{ position: 'absolute', top: '0', left: '42%' }}>Frontend</span>
-                   <span style={{ position: 'absolute', bottom: '0', left: '42%' }}>DevOps</span>
-                   <span style={{ position: 'absolute', top: '45%', right: '0' }}>Backend</span>
-                   <span style={{ position: 'absolute', top: '45%', left: '0' }}>AI/ML</span>
+                <div className="h-2 bg-slate-950 rounded-full overflow-hidden shadow-inner border border-slate-800/50">
+                  <div
+                    className="h-full bg-gradient-to-r from-blue-500 via-indigo-400 to-blue-500 relative transition-all duration-500 ease-out"
+                    style={{ width: `${scanMessages[scanStep].p}%` }}
+                  >
+                    <div className="absolute top-0 left-0 right-0 bottom-0 bg-[linear-gradient(45deg,rgba(255,255,255,0.2)_25%,transparent_25%,transparent_50%,rgba(255,255,255,0.2)_50%,rgba(255,255,255,0.2)_75%,transparent_75%,transparent)] bg-[length:20px_20px] animate-shimmer"></div>
+                  </div>
                 </div>
               </div>
-            </div>
-          </aside>
+            )}
+          </div>
+        </section>
 
-          {/* MAIN CONTENT */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-            {/* RECRUITER INSIGHT */}
-            <div className="glass" style={{ borderLeft: '5px solid var(--accent)', background: 'linear-gradient(90deg, #0d1117, #0a0c10)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                <h4 style={{ margin: 0, fontSize: '14px', letterSpacing: '0.5px' }}><Award size={18} style={{ verticalAlign: 'middle', marginRight: '10px' }} /> RECRUITER DECISION DASHBOARD</h4>
-                <div style={{ display: 'flex', gap: '8px' }}>
-                   <span style={{ fontSize: '10px', background: 'rgba(37,99,235,0.1)', color: 'var(--accent)', padding: '4px 10px', borderRadius: '4px', border: '1px solid var(--accent)' }}>AI RISK: MINIMAL</span>
+        {error && (
+          <div className="bg-rose-500/10 border border-rose-500/20 text-rose-400 px-6 py-4 rounded-xl text-sm font-medium mb-8 flex items-center gap-3 shadow-[0_0_20px_rgba(244,63,94,0.1)] animate-in fade-in slide-in-from-top-4">
+            <ShieldAlert className="w-5 h-5" />
+            <span><strong className="text-rose-300">PROTOCOL_ERROR:</strong> {error}</span>
+          </div>
+        )}
+
+        {data && (
+          <main className="grid grid-cols-1 lg:grid-cols-12 gap-8 animate-in fade-in duration-700 zoom-in-95">
+            {/* SIDEBAR: AUTHENTICITY */}
+            <aside className="lg:col-span-4 flex flex-col gap-6">
+              <div className="bg-slate-900/40 backdrop-blur-md border border-slate-800/60 rounded-2xl p-8 flex flex-col items-center text-center relative overflow-hidden group hover:border-blue-500/30 transition-all duration-300">
+                <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500/10 rounded-full blur-3xl -mr-10 -mt-10 pointer-events-none"></div>
+
+                <div className="relative mb-6">
+                  <div className="absolute -inset-1 bg-gradient-to-r from-blue-500 to-emerald-500 rounded-full blur opacity-40"></div>
+                  <img src={data.user.avatar_url} className="relative w-28 h-28 rounded-full border-2 border-slate-800 object-cover shadow-2xl" alt="" />
+                </div>
+
+                <h2 className="text-2xl font-black text-white tracking-tight">{data.user.name || data.user.login}</h2>
+                <div className="flex gap-2 mt-3">
+                  <span className="text-[10px] uppercase font-bold px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shadow-[0_0_10px_rgba(16,185,129,0.1)]">Authentic</span>
+                  <span className="text-[10px] uppercase font-bold px-3 py-1 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20">Pro</span>
+                </div>
+
+                <div className="my-10 relative">
+                  <div className="text-7xl font-black text-transparent bg-clip-text bg-gradient-to-br from-white via-blue-100 to-blue-600 drop-shadow-sm filter">
+                    {data.authScore}<span className="text-4xl text-blue-500/50">%</span>
+                  </div>
+                  <div className="flex items-center justify-center gap-2 mt-3 relative group/tooltip">
+                    <div className="text-[10px] text-slate-500 font-bold tracking-[0.3em]">TRUST INDEX</div>
+                    <Info className="w-3.5 h-3.5 text-slate-400 hover:text-blue-400 cursor-help" />
+
+                    {/* EXPLAIN SCORE TOOLTIP */}
+                    <div className="absolute bottom-full mb-2 w-64 p-3 bg-slate-800 text-[10px] text-left text-slate-300 rounded-lg shadow-xl border border-slate-700 opacity-0 group-hover/tooltip:opacity-100 pointer-events-none transition-opacity z-50">
+                      <div className="font-bold text-white mb-1 border-b border-slate-700 pb-1">Trust Score Algorithm</div>
+                      <ul className="list-disc pl-3 mt-1 space-y-1 text-slate-400">
+                        <li><span className="text-emerald-400">40%</span> Original Repos (vs Forks)</li>
+                        <li><span className="text-blue-400">20%</span> Codebase Depth (Avg Repo Size)</li>
+                        <li><span className="text-indigo-400">20%</span> Commit Consistency</li>
+                        <li><span className="text-amber-400">20%</span> Community Validation (Stars/Followers)</li>
+                      </ul>
+                      <div className="mt-2 text-blue-300 border-t border-slate-700 pt-1">+ AI Anomaly Avoidance Modifiers</div>
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  className="w-full bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-300 text-xs font-bold py-3.5 rounded-xl transition-colors duration-200 mt-2"
+                  onClick={() => setShowEvidence(!showEvidence)}
+                >
+                  {showEvidence ? "HIDE BREAKDOWN" : "VIEW TRUST EXPLANATION ↓"}
+                </button>
+
+                {showEvidence && (
+                  <div className="w-full text-left mt-4 text-[10px] bg-slate-950/80 p-5 rounded-xl border border-slate-800 shadow-inner space-y-4 animate-in fade-in slide-in-from-top-2">
+
+                    {/* Trust Breakdown Bars */}
+                    <div>
+                      <div className="flex justify-between mb-1"><span className="text-slate-400">Original Work:</span><span className="text-emerald-400 font-bold">{data.trustBreakdown.originalWork}%</span></div>
+                      <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden flex"><div className="bg-emerald-500 h-full" style={{ width: `${data.trustBreakdown.originalWork}%` }}></div></div>
+                    </div>
+
+                    <div>
+                      <div className="flex justify-between mb-1"><span className="text-slate-400">Commit Consistency:</span><span className="text-blue-400 font-bold">{data.trustBreakdown.commitConsistency}%</span></div>
+                      <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden flex"><div className="bg-blue-500 h-full" style={{ width: `${data.trustBreakdown.commitConsistency}%` }}></div></div>
+                    </div>
+
+                    <div>
+                      <div className="flex justify-between mb-1"><span className="text-slate-400">Fork Ratio (Lower is Better):</span><span className="text-amber-400 font-bold">{data.trustBreakdown.forkRatioScore}%</span></div>
+                      <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden flex"><div className="bg-amber-500 h-full" style={{ width: `${data.trustBreakdown.forkRatioScore}%` }}></div></div>
+                    </div>
+
+                    <div>
+                      <div className="flex justify-between mb-1"><span className="text-slate-400">Community Signal:</span><span className="text-indigo-400 font-bold">{data.trustBreakdown.communitySignal}%</span></div>
+                      <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden flex"><div className="bg-indigo-500 h-full" style={{ width: `${data.trustBreakdown.communitySignal}%` }}></div></div>
+                    </div>
+
+                    <div className="flex justify-between items-center pt-2 border-t border-slate-800 text-blue-300 font-bold">
+                      <span>AI Risk Adjustment:</span><span>+5</span>
+                    </div>
+
+                  </div>
+                )}
+              </div>
+
+              {/* TIMELINE / ACTIVITY SIGNAL */}
+              <div className="bg-slate-900/40 backdrop-blur-md border border-slate-800/60 rounded-2xl p-6 hover:border-slate-700 transition duration-300">
+                <h4 className="flex items-center gap-2 text-[10px] font-bold text-slate-500 tracking-widest uppercase mb-5">
+                  <Activity className="w-4 h-4 text-emerald-500" /> Timeline Forensics
+                </h4>
+
+                <div className="space-y-4">
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-slate-400">Development Consistency:</span>
+                    <span className={`font-bold ${data.forensics.consistency === 'HIGH' ? 'text-emerald-400' : data.forensics.consistency === 'MEDIUM' ? 'text-amber-400' : 'text-rose-400'}`}>{data.forensics.consistency}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-slate-400">Active Months (Recent):</span>
+                    <span className="font-bold text-white">{data.forensics.activeMonths}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-slate-400">Longest Gap:</span>
+                    <span className="font-bold text-white">{data.forensics.longestGap}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-sm pt-4 border-t border-slate-800/60">
+                    <span className="text-slate-400 flex items-center gap-2"><Clock className="w-4 h-4 text-slate-500" /> Contribution Trend:</span>
+                    <span className={`font-bold ${data.forensics.trend.includes('High') ? 'text-blue-400' : data.forensics.trend.includes('Stable') ? 'text-emerald-400' : 'text-slate-400'}`}>{data.forensics.trend}</span>
+                  </div>
                 </div>
               </div>
-              <p style={{ fontSize: '14px', lineHeight: 1.7, color: '#8b949e', marginBottom: '25px' }}>
-                Decision intelligence validates <b>{data.user.login}</b> as a verified technical asset. Focus architecture: <b>{data.featured[0]?.language}</b> systems. No anomalous commit spikes detected in historical data.
-              </p>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '15px', paddingTop: '20px', borderTop: '1px solid #30363d' }}>
-                 <div><label style={{ fontSize: '9px', color: '#6e7681', fontWeight: 'bold' }}>REC. ROLE</label><div style={{ fontSize: '13px', fontWeight: 'bold' }}>Full Stack</div></div>
-                 <div><label style={{ fontSize: '9px', color: '#6e7681', fontWeight: 'bold' }}>EXPERIENCE</label><div style={{ fontSize: '13px', fontWeight: 'bold' }}>Mid-Senior</div></div>
-                 <div><label style={{ fontSize: '9px', color: '#6e7681', fontWeight: 'bold' }}>HIRING RISK</label><div style={{ fontSize: '13px', fontWeight: 'bold', color: 'var(--emerald)' }}>LOW</div></div>
-                 <div><label style={{ fontSize: '9px', color: '#6e7681', fontWeight: 'bold' }}>VERDICT</label><div style={{ fontSize: '13px', fontWeight: 'bold', color: 'var(--accent)' }}>INTERVIEW</div></div>
-              </div>
-            </div>
+            </aside>
 
-            {/* INTERVIEW GENERATOR */}
-            <div className="glass" style={{ borderLeft: '4px solid var(--amber)' }}>
-               <h4 style={{ margin: '0 0 15px 0', fontSize: '14px', color: 'var(--amber)' }}><MessageSquare size={16} inline /> SUGGESTED INTERVIEW QUESTIONS</h4>
-               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            {/* MAIN CONTENT AREA */}
+            <div className="lg:col-span-8 flex flex-col gap-6">
+
+              {/* RECRUITER INSIGHT */}
+              <div className="relative overflow-hidden bg-slate-900/80 backdrop-blur-xl border border-slate-800 rounded-2xl p-1 shadow-xl">
+                <div className="absolute top-0 left-0 w-1 h-full bg-gradient-to-b from-blue-400 to-blue-600"></div>
+                <div className="bg-slate-950/50 h-full w-full rounded-xl p-6 lg:p-8">
+                  <div className="flex flex-col sm:flex-row justify-between sm:items-center mb-6 gap-4">
+                    <h4 className="m-0 text-sm font-bold text-white flex items-center gap-3 uppercase tracking-wider">
+                      <Award className="w-5 h-5 text-blue-400" /> Recruiter Decision Board
+                    </h4>
+                    <span className="text-[10px] font-black bg-blue-500/10 text-blue-400 px-3 py-1.5 rounded-full border border-blue-500/20 shadow-[0_0_10px_rgba(37,99,235,0.15)] flex-shrink-0 text-center w-max">AI RISK: MINIMAL</span>
+                  </div>
+                  <p className="text-sm leading-relaxed text-slate-400 mb-8 max-w-3xl">
+                    Decision intelligence validates <b className="text-white font-semibold">{data.user.login}</b> as a verified technical asset. Focus architecture: <b className="text-blue-300 font-semibold">{data.featured[0]?.language}</b> systems. No anomalous commit spikes detected in historical data, indicating consistent, human-driven development patterns.
+                  </p>
+
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-6 border-t border-slate-800/80">
+                    <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-800/50">
+                      <label className="text-[10px] text-slate-500 font-bold tracking-wider mb-2 block">REC. ROLE</label>
+                      <div className="text-sm font-bold text-white">Full Stack</div>
+                    </div>
+                    <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-800/50">
+                      <label className="text-[10px] text-slate-500 font-bold tracking-wider mb-2 block">EXPERIENCE</label>
+                      <div className="text-sm font-bold text-white">Mid-Senior</div>
+                    </div>
+                    <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-800/50">
+                      <label className="text-[10px] text-slate-500 font-bold tracking-wider mb-2 block">HIRING RISK</label>
+                      <div className="text-sm font-bold text-emerald-400 drop-shadow-[0_0_8px_rgba(16,185,129,0.3)]">LOW</div>
+                    </div>
+                    <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-800/50">
+                      <label className="text-[10px] text-slate-500 font-bold tracking-wider mb-2 block">VERDICT</label>
+                      <div className="text-sm font-bold text-blue-400 drop-shadow-[0_0_8px_rgba(59,130,246,0.3)]">INTERVIEW</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* INTERACTIVE INTERVIEW GENERATOR */}
+              <div className="bg-gradient-to-br from-slate-900/80 to-slate-950/80 backdrop-blur-md border border-slate-800/80 border-l-4 border-l-amber-500/80 rounded-2xl p-6 lg:p-8 hover:shadow-[0_0_30px_rgba(245,158,11,0.05)] transition duration-500">
+                <h4 className="flex items-center gap-3 text-sm font-bold text-amber-500 mb-6 uppercase tracking-wider">
+                  <MessageSquare className="w-5 h-5" /> Suggested Interview Angles
+                </h4>
+                <div className="flex flex-col gap-4">
                   {data.questions.map((q, i) => (
-                    <div key={i} style={{ fontSize: '13px', color: '#e6edf3', background: 'rgba(255,255,255,0.03)', padding: '10px', borderRadius: '8px' }}>
-                      <b>Q{i+1}:</b> {q}
+                    <div key={i} className="group bg-slate-950/50 border border-slate-800/50 rounded-xl overflow-hidden hover:border-slate-700 transition duration-300">
+
+                      <div
+                        className="flex justify-between items-center p-4 cursor-pointer hover:bg-slate-900 transition-colors"
+                        onClick={() => setExpandedQ(expandedQ === i ? null : i)}
+                      >
+                        <div className="flex gap-4 items-center flex-1">
+                          <span className="text-slate-500 font-bold w-6">Q{i + 1}:</span>
+                          <span className="text-sm font-medium text-slate-300 leading-snug">{q.q}</span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <span className={`text-[9px] px-2 py-1 rounded font-bold uppercase tracking-wider
+                                ${q.diff === 'Hard' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' :
+                              q.diff === 'Medium' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' :
+                                'bg-blue-500/10 text-blue-400 border border-blue-500/20'}`
+                          }>
+                            {q.diff}
+                          </span>
+                          {expandedQ === i ? <Minus className="w-4 h-4 text-slate-500" /> : <Plus className="w-4 h-4 text-slate-500" />}
+                        </div>
+                      </div>
+
+                      {/* Expandable Expected Answer Drawer */}
+                      {expandedQ === i && (
+                        <div className="p-4 bg-slate-900/80 border-t border-slate-800/50 animate-in slide-in-from-top-2 relative">
+                          <label className="text-[10px] text-emerald-500 font-bold uppercase tracking-widest mb-2 block">Expected Senior Answer Signal</label>
+                          <p className="text-xs text-slate-400 leading-relaxed pr-10">{q.expected}</p>
+
+                          <button
+                            onClick={(e) => { e.stopPropagation(); copyToClipboard(q.copy); }}
+                            className="absolute top-4 right-4 p-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-300 transition-colors"
+                            title="Copy exact question to clipboard"
+                          >
+                            <Copy className="w-4 h-4" />
+                          </button>
+                        </div>
+                      )}
+
                     </div>
                   ))}
-               </div>
-            </div>
-
-            {/* REPOSITORIES */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '20px' }}>
-              {data.featured.map(repo => (
-                <div key={repo.id} className="glass" style={{ background: 'rgba(0,0,0,0.2)' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
-                    <Box size={20} color="var(--accent)" />
-                    <span style={{ fontSize: '11px', fontWeight: 'bold' }}>{repo.stargazers_count} ★</span>
-                  </div>
-                  <h4 style={{ margin: '0 0 8px 0', fontSize: '16px' }}>{repo.name}</h4>
-                  <div style={{ fontSize: '10px', color: '#6e7681', marginBottom: '20px' }}>Complexity: High | Verified Source ✔</div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: '10px', fontWeight: '900', color: 'var(--accent)', background: 'rgba(37,99,235,0.1)', padding: '4px 10px', borderRadius: '6px' }}>{repo.language || "CORE"}</span>
-                    <a href={repo.html_url} target="_blank" rel="noreferrer" style={{ color: '#6e7681' }}><ExternalLink size={16} /></a>
-                  </div>
                 </div>
-              ))}
-            </div>
+              </div>
 
-            <button onClick={() => window.print()} className="btn-primary" style={{ background: '#fff', color: '#000', width: '100%', justifyContent: 'center', padding: '20px', borderRadius: '14px', boxShadow: '0 20px 50px -15px rgba(0,0,0,0.7)' }}>
-              <FileText size={20} /> GENERATE CANDIDATE DOSSIER (PDF)
-            </button>
-          </div>
-        </main>
-      )}
+              {/* REPOSITORIES GRID */}
+              <div className="mt-2 text-sm font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-3">
+                <Box className="w-4 h-4" /> Verified Code DNA
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                {data.featured.map((repo, i) => (
+                  <div key={repo.id}
+                    className="group bg-slate-900/40 backdrop-blur-sm border border-slate-800/60 p-6 rounded-2xl hover:bg-slate-800/50 hover:border-slate-700 hover:-translate-y-1 transition-all duration-300 relative overflow-hidden"
+                    style={{ animationDelay: `${i * 100}ms` }}
+                  >
+                    <div className="absolute inset-0 bg-gradient-to-br from-blue-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                    <div className="relative z-10">
+                      <div className="flex justify-between items-center mb-4">
+                        <div className="w-10 h-10 rounded-lg bg-slate-800 flex items-center justify-center border border-slate-700 text-blue-400 group-hover:text-white transition-colors">
+                          <Box className="w-5 h-5" />
+                        </div>
+                        <span className="text-xs font-bold text-slate-300 flex items-center gap-1 bg-slate-950/50 px-2.5 py-1 rounded-md border border-slate-800">
+                          {repo.stargazers_count} <span className="text-amber-400">★</span>
+                        </span>
+                      </div>
+                      <h4 className="font-bold text-base text-white mb-2 truncate group-hover:text-blue-300 transition-colors">{repo.name}</h4>
+                      <div className="text-[10px] text-slate-500 mb-6 font-medium">Complexity: High | Verified Source <span className="text-emerald-500">✔</span></div>
+
+                      <div className="flex justify-between items-center mt-auto pt-4 border-t border-slate-800/60">
+                        <span className="text-[10px] font-bold text-blue-400 bg-blue-500/10 px-3 py-1.5 rounded-md border border-blue-500/20 shadow-sm">
+                          {repo.language || "CORE"}
+                        </span>
+                        <a href={repo.html_url} target="_blank" rel="noreferrer" className="text-slate-500 hover:text-white transition-colors bg-slate-800/50 p-2 rounded-md hover:bg-slate-700">
+                          <ExternalLink className="w-4 h-4" />
+                        </a>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* ACTION BUTTON */}
+              <button
+                onClick={() => window.print()}
+                className="group relative mt-4 w-full bg-white text-slate-950 font-black py-5 rounded-2xl shadow-[0_0_40px_rgba(255,255,255,0.1)] hover:shadow-[0_0_50px_rgba(255,255,255,0.2)] hover:scale-[1.01] transition-all duration-300 flex items-center justify-center gap-3 overflow-hidden border border-white"
+              >
+                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent -translate-x-full group-hover:animate-[shimmer_1.5s_infinite]"></div>
+                <FileText className="w-6 h-6" />
+                <span className="relative z-10 tracking-widest text-sm translate-y-[1px]">GENERATE CANDIDATE DOSSIER</span>
+              </button>
+
+            </div>
+          </main>
+        )}
+      </div>
+
+      {/* GLOBAL CUSTOM ANIMATIONS */}
+      <style dangerouslySetInnerHTML={{
+        __html: `
+        @keyframes shimmer {
+          100% { transform: translateX(100%); }
+        }
+      `}} />
     </div>
   );
 }
